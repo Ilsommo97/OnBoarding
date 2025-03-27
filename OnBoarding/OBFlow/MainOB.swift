@@ -22,17 +22,23 @@ struct MainOB: View {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal) {
                         HStack{
+                            
                             AnimatedStorageView(page: $currentPage)
                                 .containerRelativeFrame(.horizontal)
                                 .id(0)
+                            
+                            SwipeChart(page: $currentPage)                              .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .containerRelativeFrame(.horizontal)
+                                .id(1)
+                     
                             PermissionView(page: $currentPage)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .containerRelativeFrame(.horizontal)
-                                .id(1)
+                                .id(2)
                             SimilarOB2(page: $currentPage)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .containerRelativeFrame(.horizontal)
-                                .id(2)
+                                .id(3)
                         }
                         .scrollTargetLayout()
                     }
@@ -44,7 +50,7 @@ struct MainOB: View {
                         withAnimation {
                             proxy.scrollTo(newValue)
                         }
-                        if currentPage == 2 {
+                        if currentPage == 3 {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                                 // after the scrroll ...
                                 if let animation = viewModel.animations["similar"] {

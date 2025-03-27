@@ -6,7 +6,7 @@
 //
 import SwiftUI
 
-struct StorageChart2: View {
+struct CircularStorage: View {
     @State var usedStorage: Double = 77 // Example value in GB
     @State var totalStorage: Double = 100 // Example value in GB
     @State private var usedProgress: Double = 0
@@ -102,7 +102,7 @@ struct StorageChart2: View {
 struct Test23 : View {
     @State var sto = 0.0
     var body: some View {
-        StorageChart2(savedStorage: $sto)
+        CircularStorage(savedStorage: $sto)
             .onAppear {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     withAnimation(.linear(duration: 1.5)) {
