@@ -44,6 +44,8 @@ struct RankedCircledImage : Identifiable {
     var image : UIImage
     
     var shouldHide : Bool
+    
+    var toMatchedString : String = ""
         
 }
 
@@ -70,6 +72,10 @@ struct CardAnimationCopy : Identifiable {
     var offsetY : Double = 0
     
     var offsetX : Double = 0
+    
+    var fromContentMode : ContentMode
+    
+    var toContentMode : ContentMode
     
 }
 

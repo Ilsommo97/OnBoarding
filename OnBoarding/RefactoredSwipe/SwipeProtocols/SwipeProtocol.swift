@@ -10,6 +10,11 @@ import Photos
 
 
 
+// MARK: - Helper types
+private enum SwipeDirection {
+    case left
+    case right
+}
 
 protocol SwipeViewModelProtocol : ObservableObject {
     // A new concept: these ones are all the wrappers of the associated month. In general, it represents all the wrappers that the user can swipe for the current swipe view.
@@ -39,6 +44,10 @@ extension SwipeViewModelProtocol {
    
     
     var horizontalThreshold: Double { 70.0 }
+    
+    var generator : UIImpactFeedbackGenerator {
+        UIImpactFeedbackGenerator(style: .medium)
+    }
 
     var dateString: String {
         if self.currentIndex < self.cardQuee.count {
@@ -74,115 +83,236 @@ extension SwipeViewModelProtocol {
     func onDragEnded(_ value: DragGesture.Value) {
         shouldLoadNewCardContent = true
         let translation = value.translation
-        // Resetting the card parameters!
+        
+        // Handle small swipe (below threshold)
         if abs(translation.width) < horizontalThreshold {
             withAnimation {
                 currentCardOffset = .zero
                 currentCardRotation = 0
             }
+
+            return
+        }
+        
+        // Process successful swipe
+        processSuccessfulSwipe(translation)
+    }
+
+ 
+
+    private func processSuccessfulSwipe(_ translation: CGSize) {
+        let hasAlreadyBeenSwiped = !self.cardQuee[currentIndex].isKept && !self.cardQuee[currentIndex].isTrashed
+        let swipeDirection: SwipeDirection = translation.width > 0 ? .right : .left
+        let currentAsset = self.cardQuee[currentIndex]
+        
+        // Update categorization state
+        if hasAlreadyBeenSwiped {
+            self.categorizedCount += 1
+        }
+        
+        // Update card state based on swipe direction. We mark the wrapper in the card quee either as kept or trashed
+        
+        // Create and setup animation copy
+        let copy = createAnimationCopy(for: currentAsset)
+        self.cardCopies.append(copy)
+        
+
+        // Check if all cards categorized
+        let userCategorizedAll = self.cardQuee.count == self.categorizedCount
+        
+        // Process animation with protocol check preserved
+        processAnimationWithProtocolCheck(copy, translation, userCategorizedAll)
+        
+        // Reset current card UI parameters: From this moment on, we are ready to swipe another photo while the animation goes on
+        
+        currentCardOffset = .zero
+        currentCardRotation = 0
+ 
+        updateCardState(swipeDirection)
+
+        // Update current index
+        updateCurrentIndex(userCategorizedAll)
+        
+        // Update collection view if needed
+        updateCollectionViewIfNeeded(swipeDirection, userCategorizedAll)
+        
+        // Execute business logic for the swipe
+        executeSwipeBusinessLogic(swipeDirection == .left, currentAsset)
+    }
+
+    private func updateCardState(_ direction: SwipeDirection) {
+        self.cardQuee[currentIndex].isKept = direction == .right
+        self.cardQuee[currentIndex].isTrashed = direction == .left
+    }
+
+    private func createAnimationCopy(for asset: AssetWrapper) -> CardAnimationCopy {
+        let currentCardContent = self.cardContentStack.first(where: {
+            $0.asset.localIdentifier == asset.phasset.localIdentifier
+        })
+        var contentMode : ContentMode!
+        if let image = currentCardContent?.image {
+            contentMode = image.size.width > image.size.height ? .fit : .fill
         }
         else {
-            // We trigger the swipe gesture.
-            if !self.cardQuee[currentIndex].isKept && !self.cardQuee[currentIndex].isTrashed {
-                self.categorizedCount += 1
+            contentMode = .fill
+        }
+        return CardAnimationCopy(
+            assetWrapper: asset,
+            image: currentCardContent?.image ?? UIImage(),
+            matchedId: asset.phasset.localIdentifier,
+            fromDimension: self.cardSize,
+            rotation: currentCardRotation,
+            toDimension: self.cardSize,
+            fromContentMode: contentMode,
+            toContentMode: contentMode
+        )
+    }
+
+    private func processAnimationWithProtocolCheck(_ copy: CardAnimationCopy, _ translation: CGSize, _ userCategorizedAll: Bool) {
+        guard let matchingIndex = self.cardCopies.firstIndex(where: {
+            $0.assetWrapper.phasset.localIdentifier == copy.assetWrapper.phasset.localIdentifier
+        }) else { return }
+        
+        // Preserve the protocol conformance check from the original code
+        if let self = self as? any ScoreAnimationProtocol {
+            if translation.width < 0 {
+                // delete
+                swipeWithNoMatchedAnimation(translation, matchinIndex: matchingIndex, copy: copy) {
+                    
+                    if userCategorizedAll {
+                        // modification of the to matched string!
+                        self.sortMatchedString()
+                        self.userCategorizedAll.toggle()
+                    }
+                    
+                }
             }
-            print(self.categorizedCount, self.cardQuee.count)
-            let userCategorizedAll = self.cardQuee.count == self.categorizedCount
-            self.cardQuee[currentIndex].isKept = translation.width > 0
-            self.cardQuee[currentIndex].isTrashed = translation.width < 0
-            
-            let snapCopyRotation = currentCardRotation
-            let currentAsset = self.cardQuee[self.currentIndex] // the asset being swiped
-            let currentCardContent = self.cardContentStack.first(where: {$0.asset.localIdentifier == currentAsset.phasset.localIdentifier})
-            
-            let copy = CardAnimationCopy(assetWrapper: currentAsset,
-                                         image: currentCardContent?.image ?? UIImage(),
-                                         matchedId: currentAsset.phasset.localIdentifier,
-                                         fromDimension: self.cardSize,
-                                         rotation: snapCopyRotation,
-                                         toDimension: self.cardSize
-            )
-            self.cardCopies.append(copy)
-            if let matchinIndex = self.cardCopies.firstIndex(where: {$0.assetWrapper.phasset.localIdentifier == currentAsset.phasset.localIdentifier}) {
-                if let self = self as? any MatchedGeometryProtocol {
-                    // First, we need to compare the current score with the best 5.
-                    if translation.width < 0 {
-                        // delete
-                        swipeWithNoMatchedAnimation(translation, matchinIndex: matchinIndex, copy: copy){ withAnimation(.linear(duration: 0.0)){
+            else {
+                // Keep - Check score against top scores
+                let minScore = self.littleCircledStack.prefix(5).map({$0.score}).min() ?? 0
+                let currentAsset = copy.assetWrapper
+                let currentCardContent = self.cardContentStack.first(where: {
+                    $0.asset.localIdentifier == currentAsset.phasset.localIdentifier
+                })
+                
+                if currentAsset.score > minScore {
+                    let duration = 0.35
+                    // Add to top scores with animation
+                    let newLittleRankedImage = RankedCircledImage(
+                        asset: currentAsset.phasset,
+                        score: currentAsset.score,
+                        image: currentCardContent?.image ?? UIImage(),
+                        shouldHide: true
+                    )
+                
+                    withAnimation(.linear(duration: 0.15)) {
+                        self.littleCircledStack.append(newLittleRankedImage)
+                        self.littleCircledStack.sort(by: {$0.score > $1.score})
+                    }
+                    
+                    
+        
+                    withAnimation(.interactiveSpring(duration: 0.45, extraBounce: 0.1, blendDuration: 0.1),
+                                   completionCriteria: userCategorizedAll ? .logicallyComplete :  .removed) {
+                        self.cardCopies[matchingIndex].shouldAnimate = true
+                        self.cardCopies[matchingIndex].matchedId = newLittleRankedImage.id.uuidString
+                        self.cardCopies[matchingIndex].toContentMode = .fill // goes to a l
+                        self.cardCopies[matchingIndex].toDimension = CGSize(
+                            width: self.littleCircleStackDim,
+                            height: self.littleCircleStackDim
+                        )
+                        
+                    } completion: {
+                        if let index = self.littleCircledStack.firstIndex(where: {$0.id == newLittleRankedImage.id}) {
+                            self.littleCircledStack[index].shouldHide = false
                             if userCategorizedAll {
                                 self.userCategorizedAll.toggle()
                             }
-                        } }
-                    }
-                    else {
-                        let minScore = self.littleCircledStack.prefix(5).map({$0.score}).min() ?? 0
-                        if currentAsset.score > minScore {
-                            // we can now add the new little cirlced image
-                            let newLittleRankedImage = RankedCircledImage(asset: currentAsset.phasset, score: currentAsset.score,
-                                                                          image: currentCardContent?.image ?? UIImage(), shouldHide: true)
-                            
-                            withAnimation(.linear(duration: 0.3)) {
-                                self.littleCircledStack.append(newLittleRankedImage)
-                                self.littleCircledStack.sort(by: {$0.score > $1.score})
-                            }
-                            self.cardCopies[matchinIndex].toDimension = CGSize(width: self.littleCircleStackDim, height: self.littleCircleStackDim)
-                            self.cardCopies[matchinIndex].matchedId = newLittleRankedImage.id.uuidString
-                            withAnimation(.spring(duration: 0.3), completionCriteria: userCategorizedAll ? .logicallyComplete : .removed) {
-                                self.cardCopies[matchinIndex].shouldAnimate = true
-                            } completion: {
-                                if let index = self.littleCircledStack.firstIndex(where: {$0.id == newLittleRankedImage.id}) {
-                                    self.littleCircledStack[index].shouldHide = false
-                                    withAnimation(.linear(duration: 0)){
-                                        if userCategorizedAll {
-                                            self.userCategorizedAll.toggle()
-                                        }
-                                    }
-                                }
-                                
-                            }
-                            flushDataAfterAnimations(animationDuration: 0.3, copy: copy)
-                            
-                        }
-                        else {
-                            swipeWithNoMatchedAnimation(translation, matchinIndex: matchinIndex, copy: copy) {
-                                withAnimation(.linear(duration: 0)){
-                                if userCategorizedAll {
-                                self.userCategorizedAll.toggle()
-                            }} }
                         }
                     }
+                    generator.impactOccurred()
+                    flushDataAfterAnimations(animationDuration: duration + 1, copy: copy)
                 }
                 else {
-                    swipeWithNoMatchedAnimation(translation, matchinIndex: matchinIndex, copy: copy) { withAnimation{self.userCategorizedAll.toggle()} }
+                    // Standard keep animation without top scores
+                    swipeWithNoMatchedAnimation(translation, matchinIndex: matchingIndex, copy: copy) {
+                        
+                        if userCategorizedAll {
+                            self.sortMatchedString()
+                            self.userCategorizedAll.toggle()
+                        }
+                        
+                    }
                 }
             }
-                /// we reset the UI parameters
-            self.currentCardOffset = .zero
-            self.currentCardRotation = 0
-            
-            if self.cardQuee.count - 1 == self.currentIndex && !userCategorizedAll {
-                self.currentIndex = self.cardQuee.firstIndex(where: { !$0.isKept && !$0.isTrashed }) ?? 0
-            } else {
-                self.currentIndex += 1
-            }
-            
-            // itll check the protocol conformance, and update the collection view ui accordingly.
-            if !userCategorizedAll{
-                
-                if let self = self as? any ScrollSwipeDelegate {
-                    self.matchCollectionViewIndex(isTrashed: translation.width < 0)
-                }
-            }
-            
-            // Implements the Business logic of the swipe
-            Task(priority: .background) {
-                try await self.onEndedSwipe(translation.width < 0, assetWrapper: currentAsset)
-            }
-            
         }
-        
+        else {
+            // No matched geometry protocol - default animation
+            swipeWithNoMatchedAnimation(translation, matchinIndex: matchingIndex, copy: copy) {
+                withAnimation {
+                    if userCategorizedAll {
+                        self.userCategorizedAll.toggle()
+                    }
+                }
+            }
+        }
+    }
+
+    private func updateCurrentIndex(_ userCategorizedAll: Bool) {
+        if self.cardQuee.count - 1 == self.currentIndex && !userCategorizedAll {
+            self.currentIndex = self.cardQuee.firstIndex(where: { !$0.isKept && !$0.isTrashed }) ?? 0
+        } else {
+            self.currentIndex += 1
+        }
+    }
+
+    private func updateCollectionViewIfNeeded(_ direction: SwipeDirection, _ userCategorizedAll: Bool) {
+        if !userCategorizedAll {
+            if let self = self as? any ScrollSwipeDelegate {
+                self.matchCollectionViewIndex(isTrashed: direction == .left)
+            }
+        }
+    }
+
+    private func executeSwipeBusinessLogic(_ isTrashed: Bool, _ assetWrapper: AssetWrapper) {
+        Task(priority: .background) {
+            try await self.onEndedSwipe(isTrashed, assetWrapper: assetWrapper)
+        }
     }
     
+    private func sortMatchedString() {
+        if let self = self as? any ScoreAnimationProtocol {
+            
+            for (index , _) in self.littleCircledStack.enumerated() {
+                print("calling it, index : \(index)")
+
+                if index == 0 {
+                    // first image
+                    self.littleCircledStack[index].toMatchedString = "big"
+                }
+                else if index == 1 {
+                    self.littleCircledStack[index].toMatchedString = "first"
+                }
+                else if index == 2 {
+                    self.littleCircledStack[index].toMatchedString = "second"
+                }
+                else if index == 3 {
+                    self.littleCircledStack[index].toMatchedString = "third"
+                }
+                else if index == 4 {
+                    self.littleCircledStack[index].toMatchedString = "fourth"
+                }
+                else if index == 5 {
+                    self.littleCircledStack[index].toMatchedString = "fifth"
+                }
+                else {
+                    self.littleCircledStack[index].toMatchedString = "other"
+                }
+            }
+        }
+    }
+
+
     private func swipeWithNoMatchedAnimation(_ translation : CGSize, matchinIndex: Int, copy: CardAnimationCopy, completion : @escaping () -> Void) {
         self.cardCopies[matchinIndex].matchedId = translation.width > 0
         ? "\(copy.assetWrapper.phasset.localIdentifier) right" :
@@ -217,10 +347,7 @@ extension SwipeViewModelProtocol {
         }
 
     }
-    
 
-
-    
 }
 
 //MARK: -- implements default functions the the swipe view always needs:
@@ -318,14 +445,14 @@ extension SwipeViewModelProtocol {
 
 
 
-protocol MatchedGeometryProtocol : SwipeViewModelProtocol {
+protocol ScoreAnimationProtocol : SwipeViewModelProtocol {
     
     var littleCircledStack : [RankedCircledImage] {get set}
     
 }
 
-extension MatchedGeometryProtocol {
-    var littleCircleStackDim : Double { 50 }
+extension ScoreAnimationProtocol {
+    var littleCircleStackDim : Double { scaleHeight(40) }
 }
 
 
